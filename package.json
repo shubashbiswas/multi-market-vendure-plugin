@@ -1,0 +1,45 @@
+{
+  "name": "@suisuto/vendure-plugin-multi-market",
+  "version": "1.0.0",
+  "description": "Production-ready, modular multi-market and regional storefront plugin for Vendure",
+  "author": "Suisuto",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test tests/market.spec.ts"
+  },
+  "peerDependencies": {
+    "@vendure/core": ">=3.0.0",
+    "@vendure/dashboard": ">=3.0.0"
+  },
+  "dependencies": {
+    "graphql-tag": "^2.12.7",
+    "lucide-react": "^0.536.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@vendure/core": "3.7.3",
+    "@vendure/dashboard": "3.7.3",
+    "react": "^19.0.0",
+    "typescript": "^5.8.0"
+  },
+  "keywords": [
+    "vendure",
+    "vendure-plugin",
+    "multi-market",
+    "multi-country",
+    "ecommerce",
+    "channels",
+    "localization",
+    "geo-ip"
+  ]
+}
