@@ -9,6 +9,8 @@ export interface MultiMarketPluginOptions {
     geoProvider?: GeoProvider;
     geoHeaderKeys?: string[];
     cacheTtlMs?: number;
+    storefrontRevalidateUrl?: string;
+    revalidateSecret?: string;
 }
 
 export interface MarketNavigationItem {
@@ -79,6 +81,7 @@ export interface MarketConfigData {
     merchandising?: MarketMerchandising;
     content?: MarketContent;
     seo?: MarketSeo;
+    originHub?: 'BD_HUB' | 'IN_HUB' | 'DUAL_HUB' | string;
 }
 
 export type MarketResolutionStrategy = 
@@ -91,6 +94,7 @@ export type MarketResolutionStrategy =
 export interface MarketResolutionResult {
     marketCode: string;
     channelCode: string;
+    channelToken?: string;
     currency: string;
     defaultLanguage: string;
     urlPrefix: string;
@@ -115,11 +119,14 @@ export interface CreateMarketInput {
     code: string;
     name: string;
     countryCode?: string;
+    supportedCountryCodes?: string[];
     currency: string;
     defaultLanguage: string;
     supportedLanguages?: string[];
     urlPrefix?: string;
     channelCode: string;
+    channelToken?: string;
+    originHub?: 'BD_HUB' | 'IN_HUB' | 'DUAL_HUB' | string;
     enabled?: boolean;
     isDefault?: boolean;
     navigation?: MarketNavigation;
@@ -134,11 +141,14 @@ export interface UpdateMarketInput {
     code?: string;
     name?: string;
     countryCode?: string;
+    supportedCountryCodes?: string[];
     currency?: string;
     defaultLanguage?: string;
     supportedLanguages?: string[];
     urlPrefix?: string;
     channelCode?: string;
+    channelToken?: string;
+    originHub?: 'BD_HUB' | 'IN_HUB' | 'DUAL_HUB' | string;
     enabled?: boolean;
     isDefault?: boolean;
     navigation?: MarketNavigation;

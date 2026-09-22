@@ -15,6 +15,7 @@ import {
     Layers,
     Sliders,
     Search,
+    Filter,
 } from 'lucide-react';
 
 interface MarketItem {
@@ -22,11 +23,13 @@ interface MarketItem {
     code: string;
     name: string;
     countryCode?: string;
+    supportedCountryCodes?: string[];
     currency: string;
     defaultLanguage: string;
     supportedLanguages?: string[];
     urlPrefix: string;
     channelCode: string;
+    channelToken?: string;
     enabled: boolean;
     isDefault: boolean;
     navigation?: any;
@@ -34,6 +37,13 @@ interface MarketItem {
     merchandising?: any;
     content?: any;
     seo?: any;
+}
+
+interface ChannelItem {
+    id: string;
+    code: string;
+    token: string;
+    defaultCurrencyCode?: string;
 }
 
 const GET_ADMIN_MARKETS_QUERY = `
@@ -45,11 +55,13 @@ const GET_ADMIN_MARKETS_QUERY = `
             code
             name
             countryCode
+            supportedCountryCodes
             currency
             defaultLanguage
             supportedLanguages
             urlPrefix
             channelCode
+            channelToken
             enabled
             isDefault
             navigation
@@ -57,6 +69,19 @@ const GET_ADMIN_MARKETS_QUERY = `
             merchandising
             content
             seo
+        }
+    }
+`;
+
+const GET_CHANNELS_QUERY = `
+    query GetChannels {
+        channels {
+            items {
+                id
+                code
+                token
+                defaultCurrencyCode
+            }
         }
     }
 `;
@@ -110,9 +135,14 @@ const SEED_DEFAULT_MARKETS_MUTATION = `
 
 export function MarketControlPage() {
     const [markets, setMarkets] = useState<MarketItem[]>([]);
+    const [channels, setChannels] = useState<ChannelItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+    // Filters & Search
+    const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'disabled'>('all');
+    const [searchQuery, setSearchQuery] = useState('');
 
     // Modal state
     const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -123,6 +153,7 @@ export function MarketControlPage() {
     const [formCode, setFormCode] = useState('');
     const [formName, setFormName] = useState('');
     const [formCountryCode, setFormCountryCode] = useState('');
+    const [formSupportedCountryCodes, setFormSupportedCountryCodes] = useState('');
     const [formCurrency, setFormCurrency] = useState('USD');
     const [formDefaultLanguage, setFormDefaultLanguage] = useState('en');
     const [formSupportedLanguages, setFormSupportedLanguages] = useState('en');
@@ -161,9 +192,15 @@ export function MarketControlPage() {
         setLoading(true);
         setError(null);
         try {
-            const data = await executeGql(GET_ADMIN_MARKETS_QUERY, { enabledOnly: false });
-            if (data?.adminMarkets) {
-                setMarkets(data.adminMarkets);
+            const [marketData, channelData] = await Promise.all([
+                executeGql(GET_ADMIN_MARKETS_QUERY, { enabledOnly: false }),
+                executeGql(GET_CHANNELS_QUERY).catch(() => null),
+            ]);
+            if (marketData?.adminMarkets) {
+                setMarkets(marketData.adminMarkets);
+            }
+            if (channelData?.channels?.items) {
+                setChannels(channelData.channels.items);
             }
         } catch (err: any) {
             setError(err.message || 'Failed to load markets');
@@ -181,11 +218,12 @@ export function MarketControlPage() {
         setFormCode('');
         setFormName('');
         setFormCountryCode('');
+        setFormSupportedCountryCodes('');
         setFormCurrency('USD');
         setFormDefaultLanguage('en');
         setFormSupportedLanguages('en');
         setFormUrlPrefix('');
-        setFormChannelCode('');
+        setFormChannelCode(channels[0]?.code || '');
         setFormEnabled(true);
         setFormIsDefault(false);
         setFormNavigationJson('{}');
@@ -201,6 +239,7 @@ export function MarketControlPage() {
         setFormCode(market.code);
         setFormName(market.name);
         setFormCountryCode(market.countryCode || '');
+        setFormSupportedCountryCodes(market.supportedCountryCodes?.join(', ') || '');
         setFormCurrency(market.currency);
         setFormDefaultLanguage(market.defaultLanguage);
         setFormSupportedLanguages(
@@ -253,6 +292,11 @@ export function MarketControlPage() {
                 .map(s => s.trim().toLowerCase())
                 .filter(Boolean);
 
+            const supportedCountries = formSupportedCountryCodes
+                .split(',')
+                .map(s => s.trim().toUpperCase())
+                .filter(Boolean);
+
             if (editingMarket) {
                 await executeGql(UPDATE_MARKET_MUTATION, {
                     input: {
@@ -260,6 +304,7 @@ export function MarketControlPage() {
                         code: formCode,
                         name: formName,
                         countryCode: formCountryCode.trim().toUpperCase() || null,
+                        supportedCountryCodes: supportedCountries,
                         currency: formCurrency.trim().toUpperCase(),
                         defaultLanguage: formDefaultLanguage.trim().toLowerCase(),
                         supportedLanguages: supportedLangs,
@@ -280,6 +325,7 @@ export function MarketControlPage() {
                         code: formCode,
                         name: formName,
                         countryCode: formCountryCode.trim().toUpperCase() || null,
+                        supportedCountryCodes: supportedCountries,
                         currency: formCurrency.trim().toUpperCase(),
                         defaultLanguage: formDefaultLanguage.trim().toLowerCase(),
                         supportedLanguages: supportedLangs,
@@ -343,242 +389,358 @@ export function MarketControlPage() {
         }
     };
 
+    // Filtered markets
+    const filteredMarkets = markets.filter(m => {
+        if (filterStatus === 'active' && !m.enabled) return false;
+        if (filterStatus === 'disabled' && m.enabled) return false;
+        if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            return (
+                m.name.toLowerCase().includes(q) ||
+                m.code.toLowerCase().includes(q) ||
+                m.channelCode.toLowerCase().includes(q) ||
+                m.currency.toLowerCase().includes(q) ||
+                (m.countryCode && m.countryCode.toLowerCase().includes(q))
+            );
+        }
+        return true;
+    });
+
+    const activeMarketsCount = markets.filter(m => m.enabled).length;
+    const defaultMarket = markets.find(m => m.isDefault);
+    const uniqueChannels = new Set(markets.map(m => m.channelCode)).size;
+
     return (
-        <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto', fontFamily: 'sans-serif' }}>
+        <div className="space-y-6 max-w-7xl mx-auto p-4 sm:p-6 text-foreground">
             {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                    <h1 style={{ fontSize: '24px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-                        <Globe size={28} color="#2563eb" /> Multi-Market Configuration
+                    <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
+                        <Globe className="size-6 text-primary" /> Multi-Market Configuration
                     </h1>
-                    <p style={{ color: '#64748b', margin: '4px 0 0 0', fontSize: '14px' }}>
-                        Configure regional storefront markets, URL routing prefixes, Vendure channel mappings, and market-specific content.
+                    <p className="text-sm text-muted-foreground mt-1">
+                        Configure regional storefront markets, deterministic URL routing, Vendure channel mappings, and content.
                     </p>
                 </div>
-                <div style={{ display: 'flex', gap: '12px' }}>
+                <div className="flex items-center gap-2">
                     {markets.length === 0 && (
                         <button
+                            type="button"
                             onClick={handleSeedDefaults}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                padding: '8px 16px',
-                                background: '#f1f5f9',
-                                color: '#334155',
-                                border: '1px solid #cbd5e1',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontWeight: 500,
-                            }}
+                            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-border bg-card hover:bg-muted text-foreground transition shadow-xs cursor-pointer"
                         >
-                            <RefreshCw size={16} /> Seed Default Markets
+                            <RefreshCw className="size-4" /> Seed Defaults
                         </button>
                     )}
                     <button
+                        type="button"
                         onClick={openCreateModal}
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            padding: '8px 16px',
-                            background: '#2563eb',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '6px',
-                            cursor: 'pointer',
-                            fontWeight: 500,
-                        }}
+                        className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition shadow-xs cursor-pointer"
                     >
-                        <Plus size={16} /> Add Market
+                        <Plus className="size-4" /> Add Market
                     </button>
+                </div>
+            </div>
+
+            {/* KPI / Summary Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-4 bg-card border border-border rounded-lg shadow-xs">
+                    <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Markets</div>
+                    <div className="text-2xl font-bold mt-1 text-foreground">{markets.length}</div>
+                </div>
+                <div className="p-4 bg-card border border-border rounded-lg shadow-xs">
+                    <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Active Markets</div>
+                    <div className="text-2xl font-bold mt-1 text-emerald-600 dark:text-emerald-400">
+                        {activeMarketsCount}
+                    </div>
+                </div>
+                <div className="p-4 bg-card border border-border rounded-lg shadow-xs">
+                    <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Default Market</div>
+                    <div className="text-2xl font-bold mt-1 text-primary">
+                        {defaultMarket ? `${defaultMarket.name} (${defaultMarket.code})` : 'None'}
+                    </div>
+                </div>
+                <div className="p-4 bg-card border border-border rounded-lg shadow-xs">
+                    <div className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Mapped Channels</div>
+                    <div className="text-2xl font-bold mt-1 text-indigo-600 dark:text-indigo-400">
+                        {uniqueChannels}
+                    </div>
+                </div>
+            </div>
+
+            {/* Filters & Search Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-muted/40 p-3 rounded-lg border border-border">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        <Filter className="size-3.5" /> Status:
+                    </span>
+                    {(['all', 'active', 'disabled'] as const).map(s => (
+                        <button
+                            key={s}
+                            type="button"
+                            onClick={() => setFilterStatus(s)}
+                            className={`px-2.5 py-1 text-xs rounded-md font-medium capitalize transition cursor-pointer ${
+                                filterStatus === s
+                                    ? 'bg-background shadow-xs text-foreground border border-border'
+                                    : 'text-muted-foreground hover:text-foreground'
+                            }`}
+                        >
+                            {s}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="relative">
+                    <Search className="size-4 absolute left-2.5 top-2.5 text-muted-foreground pointer-events-none" />
+                    <input
+                        type="text"
+                        placeholder="Search markets..."
+                        value={searchQuery}
+                        onChange={e => setSearchQuery(e.target.value)}
+                        className="pl-8 pr-3 py-1.5 text-xs bg-background border border-border rounded-md text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-primary w-48 sm:w-64"
+                    />
                 </div>
             </div>
 
             {/* Notifications */}
             {error && (
-                <div style={{ padding: '12px 16px', background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: '6px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <AlertCircle size={18} /> {error}
+                <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <AlertCircle className="size-4 shrink-0" />
+                        <span>{error}</span>
+                    </div>
+                    <button type="button" onClick={() => setError(null)} className="text-destructive hover:opacity-70 cursor-pointer">
+                        <X className="size-4" />
+                    </button>
                 </div>
             )}
             {successMessage && (
-                <div style={{ padding: '12px 16px', background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#15803d', borderRadius: '6px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <CheckCircle2 size={18} /> {successMessage}
+                <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <CheckCircle2 className="size-4 shrink-0" />
+                        <span>{successMessage}</span>
+                    </div>
+                    <button type="button" onClick={() => setSuccessMessage(null)} className="hover:opacity-70 cursor-pointer">
+                        <X className="size-4" />
+                    </button>
                 </div>
             )}
 
             {/* Market List Table */}
-            <div style={{ background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
-                    <thead>
-                        <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', color: '#475569', fontWeight: 600 }}>
-                            <th style={{ padding: '12px 16px' }}>Market</th>
-                            <th style={{ padding: '12px 16px' }}>Code</th>
-                            <th style={{ padding: '12px 16px' }}>URL Prefix</th>
-                            <th style={{ padding: '12px 16px' }}>Vendure Channel</th>
-                            <th style={{ padding: '12px 16px' }}>Currency</th>
-                            <th style={{ padding: '12px 16px' }}>Languages</th>
-                            <th style={{ padding: '12px 16px' }}>Status</th>
-                            <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {loading ? (
+            <div className="border border-border rounded-lg bg-card overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead className="bg-muted/50 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wider">
                             <tr>
-                                <td colSpan={8} style={{ padding: '32px', textAlign: 'center', color: '#94a3b8' }}>
-                                    Loading markets...
-                                </td>
+                                <th className="py-3 px-4">Market</th>
+                                <th className="py-3 px-4">Code</th>
+                                <th className="py-3 px-4">Storefront URL</th>
+                                <th className="py-3 px-4">Vendure Channel & Token</th>
+                                <th className="py-3 px-4">Currency</th>
+                                <th className="py-3 px-4">Languages</th>
+                                <th className="py-3 px-4">Status</th>
+                                <th className="py-3 px-4 text-right">Actions</th>
                             </tr>
-                        ) : markets.length === 0 ? (
-                            <tr>
-                                <td colSpan={8} style={{ padding: '48px', textAlign: 'center', color: '#94a3b8' }}>
-                                    <Globe size={40} style={{ margin: '0 auto 12px', display: 'block', opacity: 0.5 }} />
-                                    No markets configured yet. Click "Seed Default Markets" or "Add Market" to begin.
-                                </td>
-                            </tr>
-                        ) : (
-                            markets.map(market => (
-                                <tr key={market.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                    <td style={{ padding: '14px 16px', fontWeight: 600, color: '#1e293b' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            {market.name}
-                                            {market.isDefault && (
-                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: '#fef3c7', color: '#b45309', fontSize: '11px', fontWeight: 600, padding: '2px 6px', borderRadius: '999px' }}>
-                                                    <Star size={12} /> Default
-                                                </span>
-                                            )}
-                                        </div>
-                                        {market.countryCode && (
-                                            <span style={{ fontSize: '12px', color: '#64748b' }}>Country: {market.countryCode}</span>
-                                        )}
-                                    </td>
-                                    <td style={{ padding: '14px 16px', fontFamily: 'monospace', fontWeight: 600, color: '#0f172a' }}>
-                                        {market.code}
-                                    </td>
-                                    <td style={{ padding: '14px 16px', fontFamily: 'monospace', color: '#2563eb' }}>
-                                        {market.urlPrefix ? `/${market.urlPrefix}/` : '/ (root)'}
-                                    </td>
-                                    <td style={{ padding: '14px 16px', fontFamily: 'monospace', color: '#475569' }}>
-                                        {market.channelCode}
-                                    </td>
-                                    <td style={{ padding: '14px 16px' }}>
-                                        <span style={{ background: '#ecfdf5', color: '#047857', padding: '2px 8px', borderRadius: '4px', fontWeight: 600, fontSize: '12px' }}>
-                                            {market.currency}
-                                        </span>
-                                    </td>
-                                    <td style={{ padding: '14px 16px', color: '#475569' }}>
-                                        {market.defaultLanguage.toUpperCase()}
-                                        {market.supportedLanguages && market.supportedLanguages.length > 1 && (
-                                            <span style={{ color: '#94a3b8', marginLeft: '4px' }}>
-                                                (+{market.supportedLanguages.length - 1})
-                                            </span>
-                                        )}
-                                    </td>
-                                    <td style={{ padding: '14px 16px' }}>
-                                        <button
-                                            onClick={() => handleToggleEnabled(market)}
-                                            style={{
-                                                background: market.enabled ? '#dcfce7' : '#f1f5f9',
-                                                color: market.enabled ? '#15803d' : '#64748b',
-                                                border: 'none',
-                                                padding: '4px 8px',
-                                                borderRadius: '4px',
-                                                fontSize: '12px',
-                                                fontWeight: 600,
-                                                cursor: 'pointer',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '4px',
-                                            }}
-                                        >
-                                            {market.enabled ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                                            {market.enabled ? 'Active' : 'Disabled'}
-                                        </button>
-                                    </td>
-                                    <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                                            <button
-                                                onClick={() => openEditModal(market)}
-                                                style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', padding: '4px' }}
-                                                title="Edit Market"
-                                            >
-                                                <Edit3 size={16} />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDelete(market)}
-                                                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
-                                                title="Delete Market"
-                                            >
-                                                <Trash2 size={16} />
-                                            </button>
-                                        </div>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                            {loading ? (
+                                <tr>
+                                    <td colSpan={8} className="py-12 text-center text-muted-foreground">
+                                        <RefreshCw className="size-6 animate-spin mx-auto mb-2 opacity-60" />
+                                        Loading markets...
                                     </td>
                                 </tr>
-                            ))
-                        )}
-                    </tbody>
-                </table>
+                            ) : filteredMarkets.length === 0 ? (
+                                <tr>
+                                    <td colSpan={8} className="py-12 text-center text-muted-foreground">
+                                        <Globe className="size-8 mx-auto mb-2 opacity-40" />
+                                        {markets.length === 0
+                                            ? 'No markets configured yet. Click "Seed Defaults" or "Add Market" to begin.'
+                                            : 'No markets matching the selected filters.'}
+                                    </td>
+                                </tr>
+                            ) : (
+                                filteredMarkets.map(market => (
+                                    <tr key={market.id} className="hover:bg-muted/30 transition-colors">
+                                        <td className="py-3.5 px-4 font-medium text-foreground">
+                                            <div className="flex items-center gap-2">
+                                                <span>{market.name}</span>
+                                                {market.isDefault && (
+                                                    <span className="inline-flex items-center gap-1 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-amber-500/20">
+                                                        <Star className="size-3 fill-amber-500 text-amber-500" /> Default
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {market.countryCode && (
+                                                <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                                                    <span>Primary: {market.countryCode}</span>
+                                                    {market.supportedCountryCodes && market.supportedCountryCodes.length > 0 && (
+                                                        <span className="text-muted-foreground/75">
+                                                            (+{market.supportedCountryCodes.length} clustered)
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="py-3.5 px-4 font-mono font-semibold text-foreground">
+                                            {market.code}
+                                        </td>
+                                        <td className="py-3.5 px-4 font-mono text-xs">
+                                            <span className="px-2 py-1 rounded-md bg-muted/60 text-foreground border border-border">
+                                                {market.urlPrefix ? `/${market.urlPrefix}/` : '/ (root)'}
+                                            </span>
+                                        </td>
+                                        <td className="py-3.5 px-4">
+                                            <div className="font-mono text-xs text-foreground font-medium">{market.channelCode}</div>
+                                            {market.channelToken && (
+                                                <div className="font-mono text-[11px] text-muted-foreground truncate max-w-[140px]" title={market.channelToken}>
+                                                    tok: {market.channelToken}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="py-3.5 px-4">
+                                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold text-xs border border-emerald-500/20">
+                                                {market.currency}
+                                            </span>
+                                        </td>
+                                        <td className="py-3.5 px-4 text-xs text-foreground">
+                                            <span className="font-medium uppercase">{market.defaultLanguage}</span>
+                                            {market.supportedLanguages && market.supportedLanguages.length > 1 && (
+                                                <span className="text-muted-foreground ml-1">
+                                                    (+{market.supportedLanguages.length - 1})
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="py-3.5 px-4">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleToggleEnabled(market)}
+                                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition cursor-pointer ${
+                                                    market.enabled
+                                                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+                                                        : 'bg-muted text-muted-foreground border border-border hover:bg-muted/80'
+                                                }`}
+                                            >
+                                                {market.enabled ? <CheckCircle2 className="size-3.5" /> : <XCircle className="size-3.5" />}
+                                                {market.enabled ? 'Active' : 'Disabled'}
+                                            </button>
+                                        </td>
+                                        <td className="py-3.5 px-4 text-right">
+                                            <div className="flex items-center justify-end gap-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openEditModal(market)}
+                                                    className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer"
+                                                    title="Edit Market"
+                                                >
+                                                    <Edit3 className="size-4" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDelete(market)}
+                                                    className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition cursor-pointer"
+                                                    title="Delete Market"
+                                                >
+                                                    <Trash2 className="size-4" />
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             {/* Modal Dialog for Create/Edit */}
             {isCreateOpen && (
-                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
-                    <div style={{ background: 'white', borderRadius: '10px', width: '100%', maxWidth: '800px', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
+                <div className="fixed inset-0 bg-background/80 dark:bg-black/80 backdrop-blur-xs z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
+                    <div className="bg-card text-card-foreground border border-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
                         {/* Modal Header */}
-                        <div style={{ padding: '16px 24px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <h2 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>
-                                {editingMarket ? `Edit Market: ${editingMarket.name}` : 'Create New Market'}
-                            </h2>
-                            <button onClick={() => setIsCreateOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
-                                <X size={20} />
+                        <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-muted/20">
+                            <div>
+                                <h2 className="text-lg font-semibold text-foreground">
+                                    {editingMarket ? `Edit Market: ${editingMarket.name}` : 'Create New Market'}
+                                </h2>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                    Configure storefront localization, catalog channels, and content.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsCreateOpen(false)}
+                                className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer"
+                            >
+                                <X className="size-5" />
                             </button>
                         </div>
 
                         {/* Modal Tabs */}
-                        <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', background: '#f8fafc', padding: '0 24px' }}>
+                        <div className="flex border-b border-border bg-muted/40 px-6 gap-2 overflow-x-auto">
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('basic')}
-                                style={{ padding: '12px 16px', border: 'none', background: 'none', borderBottom: activeTab === 'basic' ? '2px solid #2563eb' : 'none', color: activeTab === 'basic' ? '#2563eb' : '#64748b', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                className={`px-3.5 py-2.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                                    activeTab === 'basic'
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                                }`}
                             >
-                                <Globe size={16} /> Settings
+                                <Globe className="size-3.5" /> Basic Settings
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('navigation')}
-                                style={{ padding: '12px 16px', border: 'none', background: 'none', borderBottom: activeTab === 'navigation' ? '2px solid #2563eb' : 'none', color: activeTab === 'navigation' ? '#2563eb' : '#64748b', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                className={`px-3.5 py-2.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                                    activeTab === 'navigation'
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                                }`}
                             >
-                                <Compass size={16} /> Navigation
+                                <Compass className="size-3.5" /> Navigation
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('homepage')}
-                                style={{ padding: '12px 16px', border: 'none', background: 'none', borderBottom: activeTab === 'homepage' ? '2px solid #2563eb' : 'none', color: activeTab === 'homepage' ? '#2563eb' : '#64748b', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                className={`px-3.5 py-2.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                                    activeTab === 'homepage'
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                                }`}
                             >
-                                <Layers size={16} /> Homepage
+                                <Layers className="size-3.5" /> Homepage
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('merchandising')}
-                                style={{ padding: '12px 16px', border: 'none', background: 'none', borderBottom: activeTab === 'merchandising' ? '2px solid #2563eb' : 'none', color: activeTab === 'merchandising' ? '#2563eb' : '#64748b', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                className={`px-3.5 py-2.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                                    activeTab === 'merchandising'
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                                }`}
                             >
-                                <Sliders size={16} /> Merchandising
+                                <Sliders className="size-3.5" /> Merchandising
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('seo')}
-                                style={{ padding: '12px 16px', border: 'none', background: 'none', borderBottom: activeTab === 'seo' ? '2px solid #2563eb' : 'none', color: activeTab === 'seo' ? '#2563eb' : '#64748b', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                                className={`px-3.5 py-2.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 transition cursor-pointer ${
+                                    activeTab === 'seo'
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                                }`}
                             >
-                                <Search size={16} /> SEO
+                                <Search className="size-3.5" /> SEO
                             </button>
                         </div>
 
                         {/* Modal Body */}
-                        <form onSubmit={handleSave} style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+                        <form onSubmit={handleSave} className="flex-1 overflow-y-auto p-6 space-y-4">
                             {activeTab === 'basic' && (
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             Market Code *
                                         </label>
                                         <input
@@ -587,12 +749,12 @@ export function MarketControlPage() {
                                             onChange={e => setFormCode(e.target.value)}
                                             placeholder="e.g. in, bd, global, ae"
                                             required
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
-                                        <span style={{ fontSize: '11px', color: '#64748b' }}>Unique lowercase identifier</span>
+                                        <span className="text-[11px] text-muted-foreground mt-0.5 block">Unique lowercase slug identifier</span>
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             Market Name *
                                         </label>
                                         <input
@@ -601,11 +763,11 @@ export function MarketControlPage() {
                                             onChange={e => setFormName(e.target.value)}
                                             placeholder="e.g. India, Bangladesh, Global"
                                             required
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             URL Prefix
                                         </label>
                                         <input
@@ -613,25 +775,42 @@ export function MarketControlPage() {
                                             value={formUrlPrefix}
                                             onChange={e => setFormUrlPrefix(e.target.value)}
                                             placeholder="e.g. in or leave blank for root /"
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
-                                        <span style={{ fontSize: '11px', color: '#64748b' }}>Storefront route prefix without slashes</span>
+                                        <span className="text-[11px] text-muted-foreground mt-0.5 block">Storefront path prefix without slashes</span>
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
-                                            Vendure Channel Code *
+                                        <label className="block text-xs font-medium text-foreground mb-1">
+                                            Vendure Channel *
                                         </label>
-                                        <input
-                                            type="text"
-                                            value={formChannelCode}
-                                            onChange={e => setFormChannelCode(e.target.value)}
-                                            placeholder="e.g. in-channel, bd-channel"
-                                            required
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
-                                        />
+                                        {channels.length > 0 ? (
+                                            <select
+                                                value={formChannelCode}
+                                                onChange={e => setFormChannelCode(e.target.value)}
+                                                required
+                                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                                            >
+                                                <option value="">Select a Channel...</option>
+                                                {channels.map(ch => (
+                                                    <option key={ch.id} value={ch.code}>
+                                                        {ch.code} ({ch.token})
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <input
+                                                type="text"
+                                                value={formChannelCode}
+                                                onChange={e => setFormChannelCode(e.target.value)}
+                                                placeholder="e.g. in-channel, bd-channel"
+                                                required
+                                                className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                                            />
+                                        )}
+                                        <span className="text-[11px] text-muted-foreground mt-0.5 block">Mapped Vendure catalog channel</span>
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             ISO Currency *
                                         </label>
                                         <input
@@ -640,24 +819,48 @@ export function MarketControlPage() {
                                             onChange={e => setFormCurrency(e.target.value)}
                                             placeholder="e.g. USD, INR, BDT"
                                             required
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
-                                            Country Code (ISO 3166-1)
+                                        <label className="block text-xs font-medium text-foreground mb-1">
+                                            Primary Country Code (ISO 3166-1)
                                         </label>
                                         <input
                                             type="text"
                                             value={formCountryCode}
                                             onChange={e => setFormCountryCode(e.target.value)}
                                             placeholder="e.g. IN, BD, US, AE"
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
-                                        <span style={{ fontSize: '11px', color: '#64748b' }}>Used for Geo-IP recommendation matching</span>
+                                        <span className="text-[11px] text-muted-foreground mt-0.5 block">Primary country for Geo-IP</span>
                                     </div>
+                                    <div className="sm:col-span-2">
+                                        <label className="block text-xs font-medium text-foreground mb-1">
+                                            Country Cluster (comma-separated ISO codes)
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={formSupportedCountryCodes}
+                                            onChange={e => setFormSupportedCountryCodes(e.target.value)}
+                                            placeholder="e.g. DE, FR, IT, ES or AE, SA, QA, KW, OM, BH"
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
+                                        />
+                                        <span className="text-[11px] text-muted-foreground mt-0.5 block">Additional regional countries routed to this market</span>
+                                    </div>
+
+                                    {/* Storefront URL Preview Box */}
+                                    <div className="sm:col-span-2 p-3.5 rounded-lg bg-primary/5 border border-primary/20">
+                                        <span className="text-xs font-semibold text-primary block mb-1">
+                                            Storefront URL Preview
+                                        </span>
+                                        <code className="text-xs font-mono break-all text-primary/90">
+                                            https://suisuto.com{formUrlPrefix.trim() ? `/${formUrlPrefix.trim().replace(/^\/+|\/+$/g, '')}` : ''}/products/heritage-silk
+                                        </code>
+                                    </div>
+
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             Default Language Code *
                                         </label>
                                         <input
@@ -666,11 +869,11 @@ export function MarketControlPage() {
                                             onChange={e => setFormDefaultLanguage(e.target.value)}
                                             placeholder="e.g. en, bn, hi"
                                             required
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                        <label className="block text-xs font-medium text-foreground mb-1">
                                             Supported Languages (comma-separated)
                                         </label>
                                         <input
@@ -678,23 +881,28 @@ export function MarketControlPage() {
                                             value={formSupportedLanguages}
                                             onChange={e => setFormSupportedLanguages(e.target.value)}
                                             placeholder="e.g. en, bn, hi"
-                                            style={{ width: '100%', padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '14px' }}
+                                            className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                         />
                                     </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', gridColumn: 'span 2', marginTop: '8px' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
+
+                                    <div className="sm:col-span-2 flex flex-wrap items-center gap-6 pt-2">
+                                        <label className="flex items-center gap-2 text-sm font-medium text-foreground cursor-pointer select-none">
                                             <input
                                                 type="checkbox"
                                                 checked={formEnabled}
                                                 onChange={e => setFormEnabled(e.target.checked)}
-                                            /> Enabled
+                                                className="rounded border-border text-primary focus:ring-primary size-4"
+                                            />
+                                            Market Enabled
                                         </label>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '14px', fontWeight: 500, marginLeft: '24px' }}>
+                                        <label className="flex items-center gap-2 text-sm font-medium text-foreground cursor-pointer select-none">
                                             <input
                                                 type="checkbox"
                                                 checked={formIsDefault}
                                                 onChange={e => setFormIsDefault(e.target.checked)}
-                                            /> Is Default Fallback Market
+                                                className="rounded border-border text-primary focus:ring-primary size-4"
+                                            />
+                                            Is Default Fallback Market
                                         </label>
                                     </div>
                                 </div>
@@ -702,76 +910,76 @@ export function MarketControlPage() {
 
                             {activeTab === 'navigation' && (
                                 <div>
-                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                    <label className="block text-xs font-medium text-foreground mb-1">
                                         Navigation Configuration (JSON)
                                     </label>
                                     <textarea
                                         rows={14}
                                         value={formNavigationJson}
                                         onChange={e => setFormNavigationJson(e.target.value)}
-                                        style={{ width: '100%', fontFamily: 'monospace', fontSize: '13px', padding: '12px', border: '1px solid #cbd5e1', borderRadius: '6px' }}
+                                        className="w-full p-3 font-mono text-xs bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                     />
-                                    <span style={{ fontSize: '12px', color: '#64748b' }}>Structure primary menus, footer columns, and promotional links.</span>
+                                    <span className="text-xs text-muted-foreground mt-1 block">Structure primary menus, footer columns, and promotional links.</span>
                                 </div>
                             )}
 
                             {activeTab === 'homepage' && (
                                 <div>
-                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                    <label className="block text-xs font-medium text-foreground mb-1">
                                         Homepage Configuration (JSON)
                                     </label>
                                     <textarea
                                         rows={14}
                                         value={formHomepageJson}
                                         onChange={e => setFormHomepageJson(e.target.value)}
-                                        style={{ width: '100%', fontFamily: 'monospace', fontSize: '13px', padding: '12px', border: '1px solid #cbd5e1', borderRadius: '6px' }}
+                                        className="w-full p-3 font-mono text-xs bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                     />
-                                    <span style={{ fontSize: '12px', color: '#64748b' }}>Define hero headlines, CTA URLs, badges, and section sequences.</span>
+                                    <span className="text-xs text-muted-foreground mt-1 block">Define hero headlines, CTA URLs, badges, and section sequences.</span>
                                 </div>
                             )}
 
                             {activeTab === 'merchandising' && (
                                 <div>
-                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                    <label className="block text-xs font-medium text-foreground mb-1">
                                         Merchandising Configuration (JSON)
                                     </label>
                                     <textarea
                                         rows={14}
                                         value={formMerchandisingJson}
                                         onChange={e => setFormMerchandisingJson(e.target.value)}
-                                        style={{ width: '100%', fontFamily: 'monospace', fontSize: '13px', padding: '12px', border: '1px solid #cbd5e1', borderRadius: '6px' }}
+                                        className="w-full p-3 font-mono text-xs bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                     />
-                                    <span style={{ fontSize: '12px', color: '#64748b' }}>Configure featured collection slugs, product order preferences, and pinned categories.</span>
+                                    <span className="text-xs text-muted-foreground mt-1 block">Configure featured collection slugs, product order preferences, and pinned categories.</span>
                                 </div>
                             )}
 
                             {activeTab === 'seo' && (
                                 <div>
-                                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#334155', marginBottom: '4px' }}>
+                                    <label className="block text-xs font-medium text-foreground mb-1">
                                         SEO Configuration (JSON)
                                     </label>
                                     <textarea
                                         rows={14}
                                         value={formSeoJson}
                                         onChange={e => setFormSeoJson(e.target.value)}
-                                        style={{ width: '100%', fontFamily: 'monospace', fontSize: '13px', padding: '12px', border: '1px solid #cbd5e1', borderRadius: '6px' }}
+                                        className="w-full p-3 font-mono text-xs bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/20 focus:border-primary transition"
                                     />
-                                    <span style={{ fontSize: '12px', color: '#64748b' }}>Configure siteTitle, titleTemplate, defaultMetaDescription, and hreflang maps.</span>
+                                    <span className="text-xs text-muted-foreground mt-1 block">Configure siteTitle, titleTemplate, defaultMetaDescription, and hreflang maps.</span>
                                 </div>
                             )}
 
                             {/* Modal Footer */}
-                            <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                            <div className="pt-4 border-t border-border flex items-center justify-end gap-3 mt-6">
                                 <button
                                     type="button"
                                     onClick={() => setIsCreateOpen(false)}
-                                    style={{ padding: '8px 16px', background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer' }}
+                                    className="px-4 py-2 text-sm font-medium rounded-lg border border-border bg-card hover:bg-muted text-foreground transition cursor-pointer"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
-                                    style={{ padding: '8px 20px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+                                    className="px-5 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition shadow-xs cursor-pointer"
                                 >
                                     {editingMarket ? 'Update Market' : 'Create Market'}
                                 </button>

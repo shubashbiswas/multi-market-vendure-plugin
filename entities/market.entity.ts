@@ -12,6 +12,9 @@ import {
 export class Market extends VendureEntity {
     constructor(input?: DeepPartial<Market>) {
         super(input);
+        if (input) {
+            Object.assign(this, input);
+        }
     }
 
     @Index({ unique: true })
@@ -23,6 +26,9 @@ export class Market extends VendureEntity {
 
     @Column({ nullable: true })
     countryCode?: string;
+
+    @Column('simple-json', { nullable: true })
+    supportedCountryCodes?: string[];
 
     @Column()
     currency: string;
@@ -40,6 +46,12 @@ export class Market extends VendureEntity {
     @Index()
     @Column()
     channelCode: string;
+
+    @Column({ nullable: true })
+    channelToken?: string;
+
+    @Column({ nullable: true })
+    originHub?: string;
 
     @Column({ default: true })
     enabled: boolean;

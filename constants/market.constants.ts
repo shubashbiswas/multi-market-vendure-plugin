@@ -3,6 +3,8 @@ export const MULTI_MARKET_OPTIONS = Symbol('MULTI_MARKET_OPTIONS');
 export const DEFAULT_MARKET_CODE = 'global';
 
 export const DEFAULT_GEO_HEADER_KEYS = [
+    'x-mock-country',
+    'x-suisuto-mock-country',
     'cf-ipcountry',
     'x-country-code',
     'x-geo-country',

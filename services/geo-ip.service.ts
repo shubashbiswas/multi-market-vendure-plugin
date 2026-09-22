@@ -20,9 +20,16 @@ export class HeaderGeoProvider implements GeoProvider {
 
         const req = request as RequestLike;
         const headers = req.headers || {};
+        const isWebHeaders = typeof (headers as any).get === 'function';
 
         for (const key of this.headerKeys) {
-            const val = headers[key.toLowerCase()];
+            let val: string | string[] | null | undefined;
+            if (isWebHeaders) {
+                val = (headers as any).get(key) || (headers as any).get(key.toLowerCase());
+            } else {
+                val = (headers as Record<string, any>)[key.toLowerCase()] ?? (headers as Record<string, any>)[key];
+            }
+
             if (val) {
                 const country = Array.isArray(val) ? val[0] : val;
                 if (country && typeof country === 'string' && country.trim().length > 0) {

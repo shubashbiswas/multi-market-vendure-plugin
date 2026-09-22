@@ -1,5 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import {
+    ChannelService,
+    EventBus,
     ID,
     RequestContext,
     TransactionalConnection,
@@ -11,6 +13,7 @@ import {
     MULTI_MARKET_OPTIONS,
 } from '../constants/market.constants';
 import { Market } from '../entities/market.entity';
+import { MarketEvent } from '../events/market.event';
 import {
     CreateMarketInput,
     MarketConfigData,
@@ -36,12 +39,70 @@ export class MarketService {
     constructor(
         private connection: TransactionalConnection,
         private geoIpService: GeoIpService,
+        @Optional() private channelService?: ChannelService,
+        @Optional() private eventBus?: EventBus,
         @Optional()
         @Inject(MULTI_MARKET_OPTIONS)
         private options?: MultiMarketPluginOptions
     ) {
         this.cacheTtlMs = options?.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
         this.defaultMarketCode = options?.defaultMarketCode ?? DEFAULT_MARKET_CODE;
+    }
+
+    /**
+     * Validates that the targeted Vendure channel exists and matches currency/language rules.
+     * Extracts and returns the canonical channel code and token.
+     */
+    private async validateAndResolveChannel(
+        ctx: RequestContext,
+        channelCode: string,
+        currency?: string,
+        defaultLanguage?: string
+    ): Promise<{ code: string; token: string }> {
+        if (!this.channelService) {
+            return { code: channelCode, token: channelCode };
+        }
+
+        const channels = await this.channelService.findAll(ctx, { take: 100 } as any);
+        const channel = channels.items.find(
+            c => c.code.toLowerCase() === channelCode.trim().toLowerCase()
+        );
+
+        if (!channel) {
+            throw new UserInputError(
+                `Vendure Channel with code '${channelCode}' does not exist.`
+            );
+        }
+
+        if (currency) {
+            const normalizedCurrency = currency.trim().toUpperCase();
+            const allowedCurrencies = (channel.availableCurrencyCodes || []).map(c => c.toUpperCase());
+            const defaultCurrency = (channel.defaultCurrencyCode || '').toUpperCase();
+            if (
+                !allowedCurrencies.includes(normalizedCurrency) &&
+                defaultCurrency !== normalizedCurrency
+            ) {
+                throw new UserInputError(
+                    `Currency '${currency}' is not supported on Channel '${channel.code}'. Allowed currencies: ${allowedCurrencies.join(', ') || defaultCurrency}`
+                );
+            }
+        }
+
+        if (defaultLanguage) {
+            const normalizedLanguage = defaultLanguage.trim().toLowerCase();
+            const allowedLanguages = (channel.availableLanguageCodes || []).map(l => l.toLowerCase());
+            const defaultLang = (channel.defaultLanguageCode || '').toLowerCase();
+            if (
+                !allowedLanguages.includes(normalizedLanguage) &&
+                defaultLang !== normalizedLanguage
+            ) {
+                throw new UserInputError(
+                    `Language '${defaultLanguage}' is not supported on Channel '${channel.code}'. Allowed languages: ${allowedLanguages.join(', ') || defaultLang}`
+                );
+            }
+        }
+
+        return { code: channel.code, token: channel.token };
     }
 
     public clearCache(): void {
@@ -151,6 +212,7 @@ export class MarketService {
                     return {
                         marketCode: matchedByPrefix.code,
                         channelCode: matchedByPrefix.channelCode,
+                        channelToken: matchedByPrefix.channelToken || matchedByPrefix.channelCode,
                         currency: matchedByPrefix.currency,
                         defaultLanguage: matchedByPrefix.defaultLanguage,
                         urlPrefix: matchedByPrefix.urlPrefix,
@@ -167,6 +229,7 @@ export class MarketService {
                     return {
                         marketCode: matchedByCode.code,
                         channelCode: matchedByCode.channelCode,
+                        channelToken: matchedByCode.channelToken || matchedByCode.channelCode,
                         currency: matchedByCode.currency,
                         defaultLanguage: matchedByCode.defaultLanguage,
                         urlPrefix: matchedByCode.urlPrefix,
@@ -183,6 +246,7 @@ export class MarketService {
                     return {
                         marketCode: rootMarket.code,
                         channelCode: rootMarket.channelCode,
+                        channelToken: rootMarket.channelToken || rootMarket.channelCode,
                         currency: rootMarket.currency,
                         defaultLanguage: rootMarket.defaultLanguage,
                         urlPrefix: rootMarket.urlPrefix,
@@ -202,6 +266,7 @@ export class MarketService {
                 return {
                     marketCode: selected.code,
                     channelCode: selected.channelCode,
+                    channelToken: selected.channelToken || selected.channelCode,
                     currency: selected.currency,
                     defaultLanguage: selected.defaultLanguage,
                     urlPrefix: selected.urlPrefix,
@@ -220,6 +285,7 @@ export class MarketService {
                 return {
                     marketCode: pref.code,
                     channelCode: pref.channelCode,
+                    channelToken: pref.channelToken || pref.channelCode,
                     currency: pref.currency,
                     defaultLanguage: pref.defaultLanguage,
                     urlPrefix: pref.urlPrefix,
@@ -229,20 +295,28 @@ export class MarketService {
             }
         }
 
-        // 4. Geo-IP recommendation
+        // 4. Geo-IP recommendation (checks direct countryCode and regional supportedCountryCodes clusters)
         const request = options.req || (ctx as any).req;
         if (request) {
             const detectedCountry = await this.geoIpService.getCountry(request);
             if (detectedCountry) {
-                const geoMatch = markets.find(
-                    m =>
+                const geoMatch = markets.find(m => {
+                    const matchesPrimary =
                         m.countryCode &&
-                        m.countryCode.trim().toUpperCase() === detectedCountry.toUpperCase()
-                );
+                        m.countryCode.trim().toUpperCase() === detectedCountry.toUpperCase();
+                    const matchesCluster =
+                        m.supportedCountryCodes &&
+                        Array.isArray(m.supportedCountryCodes) &&
+                        m.supportedCountryCodes.some(
+                            c => (c || '').trim().toUpperCase() === detectedCountry.toUpperCase()
+                        );
+                    return matchesPrimary || matchesCluster;
+                });
                 if (geoMatch) {
                     return {
                         marketCode: geoMatch.code,
                         channelCode: geoMatch.channelCode,
+                        channelToken: geoMatch.channelToken || geoMatch.channelCode,
                         currency: geoMatch.currency,
                         defaultLanguage: geoMatch.defaultLanguage,
                         urlPrefix: geoMatch.urlPrefix,
@@ -259,6 +333,7 @@ export class MarketService {
             return {
                 marketCode: fallback.code,
                 channelCode: fallback.channelCode,
+                channelToken: fallback.channelToken || fallback.channelCode,
                 currency: fallback.currency,
                 defaultLanguage: fallback.defaultLanguage,
                 urlPrefix: fallback.urlPrefix,
@@ -272,6 +347,7 @@ export class MarketService {
 
     /**
      * Generates recommendation for geo soft suggestion banner without overriding URL.
+     * Evaluates both single country and regional country clusters.
      */
     async getRecommendation(
         ctx: RequestContext,
@@ -288,9 +364,18 @@ export class MarketService {
         }
 
         const markets = await this.findAll(ctx, true);
-        const matchedMarket = markets.find(
-            m => m.countryCode && m.countryCode.toUpperCase() === countryCode.toUpperCase()
-        );
+        const matchedMarket = markets.find(m => {
+            const matchesPrimary =
+                m.countryCode &&
+                m.countryCode.trim().toUpperCase() === countryCode.toUpperCase();
+            const matchesCluster =
+                m.supportedCountryCodes &&
+                Array.isArray(m.supportedCountryCodes) &&
+                m.supportedCountryCodes.some(
+                    c => (c || '').trim().toUpperCase() === countryCode.toUpperCase()
+                );
+            return matchesPrimary || matchesCluster;
+        });
 
         if (!matchedMarket) {
             return {
@@ -330,10 +415,20 @@ export class MarketService {
         }
 
         let pathname = currentUrl || '/';
+        let search = '';
+        let hash = '';
+
         try {
             if (currentUrl.startsWith('http://') || currentUrl.startsWith('https://')) {
                 const parsed = new URL(currentUrl);
                 pathname = parsed.pathname;
+                search = parsed.search;
+                hash = parsed.hash;
+            } else {
+                const dummy = new URL(currentUrl, 'http://localhost');
+                pathname = dummy.pathname;
+                search = dummy.search;
+                hash = dummy.hash;
             }
         } catch (_) {
             pathname = currentUrl;
@@ -366,9 +461,11 @@ export class MarketService {
                 : `/`;
         }
 
+        const finalUrl = `${targetPath}${search}${hash}`;
+
         return {
             targetMarketCode: target.code,
-            targetUrl: targetPath,
+            targetUrl: finalUrl,
             matchedRoute: remainingSegments.length > 0,
         };
     }
@@ -385,6 +482,7 @@ export class MarketService {
             merchandising: market.merchandising,
             content: market.content,
             seo: market.seo,
+            originHub: market.originHub,
         };
     }
 
@@ -396,6 +494,22 @@ export class MarketService {
             throw new UserInputError(`Market with code '${input.code}' already exists.`);
         }
 
+        const rawPrefix = input.urlPrefix !== undefined ? input.urlPrefix : input.code;
+        const normalizedPrefix = (rawPrefix || '').trim().toLowerCase().replace(/^\/+|\/+$/g, '');
+        const prefixConflict = await repo.findOne({ where: { urlPrefix: normalizedPrefix } });
+        if (prefixConflict) {
+            throw new UserInputError(
+                `A market with URL prefix '${normalizedPrefix || '/'}' already exists (${prefixConflict.name} - ${prefixConflict.code}). URL prefixes must be unique.`
+            );
+        }
+
+        const { code: channelCode, token: channelToken } = await this.validateAndResolveChannel(
+            ctx,
+            input.channelCode,
+            input.currency,
+            input.defaultLanguage
+        );
+
         if (input.isDefault) {
             await repo.createQueryBuilder().update(Market).set({ isDefault: false }).execute();
         }
@@ -403,14 +517,24 @@ export class MarketService {
         const market = new Market({
             ...input,
             code: input.code.trim().toLowerCase(),
-            urlPrefix: (input.urlPrefix || '').trim().toLowerCase().replace(/^\/+|\/+$/g, ''),
+            urlPrefix: normalizedPrefix,
+            countryCode: input.countryCode?.trim().toUpperCase(),
+            supportedCountryCodes: (input.supportedCountryCodes || []).map(c => c.trim().toUpperCase()),
             supportedLanguages: input.supportedLanguages || [input.defaultLanguage],
+            channelCode,
+            channelToken: input.channelToken || channelToken,
+            originHub: input.originHub,
             enabled: input.enabled ?? true,
             isDefault: input.isDefault ?? false,
         });
 
         const saved = await repo.save(market);
         this.clearCache();
+
+        if (this.eventBus) {
+            this.eventBus.publish(new MarketEvent(ctx, saved, 'created'));
+        }
+
         return saved;
     }
 
@@ -419,6 +543,20 @@ export class MarketService {
         const market = await repo.findOne({ where: { id: input.id } });
         if (!market) {
             throw new UserInputError(`Market with ID '${input.id}' not found.`);
+        }
+
+        // Guardrail: Cannot disable the active default market
+        if (market.isDefault && input.enabled === false) {
+            throw new UserInputError(
+                `Cannot disable the default market '${market.name}'. Designate another enabled market as default first.`
+            );
+        }
+
+        // Guardrail: Cannot remove default status without setting another market as default
+        if (input.isDefault === false && market.isDefault) {
+            throw new UserInputError(
+                `Cannot remove default status from market '${market.name}'. To change the default market, designate another market as default instead.`
+            );
         }
 
         if (input.code && input.code.trim().toLowerCase() !== market.code) {
@@ -431,6 +569,39 @@ export class MarketService {
             market.code = input.code.trim().toLowerCase();
         }
 
+        // URL Prefix collision check
+        if (input.urlPrefix !== undefined) {
+            const normalizedPrefix = input.urlPrefix.trim().toLowerCase().replace(/^\/+|\/+$/g, '');
+            if (normalizedPrefix !== market.urlPrefix) {
+                const prefixConflict = await repo.findOne({ where: { urlPrefix: normalizedPrefix } });
+                if (prefixConflict && String(prefixConflict.id) !== String(market.id)) {
+                    throw new UserInputError(
+                        `A market with URL prefix '${normalizedPrefix || '/'}' already exists (${prefixConflict.name} - ${prefixConflict.code}). URL prefixes must be unique.`
+                    );
+                }
+                market.urlPrefix = normalizedPrefix;
+            }
+        }
+
+        // Validate channel and synchronize token if channel, currency, or language is updated
+        if (
+            input.channelCode !== undefined ||
+            input.currency !== undefined ||
+            input.defaultLanguage !== undefined
+        ) {
+            const channelToValidate = input.channelCode || market.channelCode;
+            const currencyToValidate = input.currency || market.currency;
+            const langToValidate = input.defaultLanguage || market.defaultLanguage;
+            const { code, token } = await this.validateAndResolveChannel(
+                ctx,
+                channelToValidate,
+                currencyToValidate,
+                langToValidate
+            );
+            market.channelCode = code;
+            market.channelToken = input.channelToken || token;
+        }
+
         if (input.isDefault) {
             await repo.createQueryBuilder().update(Market).set({ isDefault: false }).execute();
             market.isDefault = true;
@@ -440,13 +611,13 @@ export class MarketService {
 
         if (input.name !== undefined) market.name = input.name;
         if (input.countryCode !== undefined) market.countryCode = input.countryCode?.trim().toUpperCase();
+        if (input.supportedCountryCodes !== undefined) {
+            market.supportedCountryCodes = (input.supportedCountryCodes || []).map(c => c.trim().toUpperCase());
+        }
         if (input.currency !== undefined) market.currency = input.currency.trim().toUpperCase();
         if (input.defaultLanguage !== undefined) market.defaultLanguage = input.defaultLanguage.trim().toLowerCase();
         if (input.supportedLanguages !== undefined) market.supportedLanguages = input.supportedLanguages;
-        if (input.urlPrefix !== undefined) {
-            market.urlPrefix = input.urlPrefix.trim().toLowerCase().replace(/^\/+|\/+$/g, '');
-        }
-        if (input.channelCode !== undefined) market.channelCode = input.channelCode.trim();
+        if (input.originHub !== undefined) market.originHub = input.originHub;
         if (input.enabled !== undefined) market.enabled = input.enabled;
         if (input.navigation !== undefined) market.navigation = input.navigation;
         if (input.homepage !== undefined) market.homepage = input.homepage;
@@ -456,6 +627,11 @@ export class MarketService {
 
         const saved = await repo.save(market);
         this.clearCache();
+
+        if (this.eventBus) {
+            this.eventBus.publish(new MarketEvent(ctx, saved, 'updated'));
+        }
+
         return saved;
     }
 
@@ -469,8 +645,21 @@ export class MarketService {
             };
         }
 
+        // Guardrail: Cannot delete the active default market
+        if (market.isDefault) {
+            return {
+                result: 'NOT_DELETED',
+                message: `Cannot delete the default market '${market.name}'. Designate another market as default before deleting this market.`,
+            };
+        }
+
         await repo.remove(market);
         this.clearCache();
+
+        if (this.eventBus) {
+            this.eventBus.publish(new MarketEvent(ctx, market, 'deleted'));
+        }
+
         return {
             result: 'DELETED',
             message: `Market '${market.name}' (${market.code}) deleted successfully.`,

@@ -1,6 +1,6 @@
 import { gql } from 'graphql-tag';
 
-export const marketShopApiSchema = gql`
+export const marketShopApiSchema: any = gql`
     type Market {
         id: ID!
         createdAt: DateTime!
@@ -8,11 +8,14 @@ export const marketShopApiSchema = gql`
         code: String!
         name: String!
         countryCode: String
+        supportedCountryCodes: [String!]
         currency: String!
         defaultLanguage: String!
         supportedLanguages: [String!]
         urlPrefix: String!
         channelCode: String!
+        channelToken: String
+        originHub: String
         enabled: Boolean!
         isDefault: Boolean!
         navigation: JSON
@@ -28,11 +31,13 @@ export const marketShopApiSchema = gql`
         merchandising: JSON
         content: JSON
         seo: JSON
+        originHub: String
     }
 
     type MarketResolutionResult {
         marketCode: String!
         channelCode: String!
+        channelToken: String
         currency: String!
         defaultLanguage: String!
         urlPrefix: String!

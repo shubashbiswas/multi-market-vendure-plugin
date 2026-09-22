@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import * as assert from 'node:assert';
 import { Market } from '../entities/market.entity';
 import { HeaderGeoProvider, GeoIpService } from '../services/geo-ip.service';
 import { MarketService } from '../services/market.service';
@@ -18,6 +18,9 @@ class MockConnection {
                 }
                 if (options?.where?.code) {
                     return this.markets.find(m => m.code === options.where.code) || null;
+                }
+                if (options?.where?.urlPrefix !== undefined) {
+                    return this.markets.find(m => m.urlPrefix === options.where.urlPrefix) || null;
                 }
                 return null;
             },
@@ -58,6 +61,7 @@ describe('Multi-Market Plugin Test Suite', () => {
             supportedLanguages: ['en'],
             urlPrefix: '',
             channelCode: '__default_channel__',
+            channelToken: '__default_channel__',
             enabled: true,
             isDefault: true,
             navigation: { primary: [{ id: '1', label: 'All Handlooms', href: '/collections/all' }] },
@@ -75,6 +79,7 @@ describe('Multi-Market Plugin Test Suite', () => {
             supportedLanguages: ['en', 'hi'],
             urlPrefix: 'in',
             channelCode: 'in-channel',
+            channelToken: 'in-token',
             enabled: true,
             isDefault: false,
             navigation: { primary: [{ id: '2', label: 'Varanasi Silks', href: '/in/collections/varanasi' }] },
@@ -92,6 +97,7 @@ describe('Multi-Market Plugin Test Suite', () => {
             supportedLanguages: ['bn', 'en'],
             urlPrefix: 'bd',
             channelCode: 'bd-channel',
+            channelToken: 'bd-token',
             enabled: true,
             isDefault: false,
             navigation: { primary: [{ id: '3', label: 'Dhakai Jamdani', href: '/bd/collections/jamdani' }] },
@@ -101,10 +107,69 @@ describe('Multi-Market Plugin Test Suite', () => {
         }),
     ];
 
+    const mockChannels = [
+        {
+            id: '1',
+            code: '__default_channel__',
+            token: '__default_channel__',
+            defaultCurrencyCode: 'USD',
+            availableCurrencyCodes: ['USD'],
+            defaultLanguageCode: 'en',
+            availableLanguageCodes: ['en'],
+        },
+        {
+            id: '2',
+            code: 'in-channel',
+            token: 'in-token',
+            defaultCurrencyCode: 'INR',
+            availableCurrencyCodes: ['INR'],
+            defaultLanguageCode: 'en',
+            availableLanguageCodes: ['en', 'hi'],
+        },
+        {
+            id: '3',
+            code: 'bd-channel',
+            token: 'bd-token',
+            defaultCurrencyCode: 'BDT',
+            availableCurrencyCodes: ['BDT'],
+            defaultLanguageCode: 'bn',
+            availableLanguageCodes: ['bn', 'en'],
+        },
+        {
+            id: '4',
+            code: 'ae-channel',
+            token: 'ae-token',
+            defaultCurrencyCode: 'AED',
+            availableCurrencyCodes: ['AED'],
+            defaultLanguageCode: 'en',
+            availableLanguageCodes: ['en', 'ar'],
+        },
+        {
+            id: '5',
+            code: 'eu-channel',
+            token: 'eu-token',
+            defaultCurrencyCode: 'EUR',
+            availableCurrencyCodes: ['EUR'],
+            defaultLanguageCode: 'en',
+            availableLanguageCodes: ['en', 'de', 'fr', 'es'],
+        },
+    ];
+
+    const mockChannelService = {
+        findAll: async () => ({ items: mockChannels }),
+    };
+
+    const publishedEvents: any[] = [];
+    const mockEventBus = {
+        publish: (event: any) => {
+            publishedEvents.push(event);
+        },
+    };
+
     const ctx = RequestContext.empty();
     const geoService = new GeoIpService();
     const mockConn = new MockConnection([...mockMarkets]);
-    const service = new MarketService(mockConn as any, geoService);
+    const service = new MarketService(mockConn as any, geoService, mockChannelService as any, mockEventBus as any);
 
     describe('1. Market Resolution Priority', () => {
         it('resolves explicit URL /in/products/silk-saree to India market (Priority 1)', async () => {
@@ -188,6 +253,14 @@ describe('Multi-Market Plugin Test Suite', () => {
             // Custom proxy
             const proxyCountry = await provider.getCountry({ headers: { 'x-country-code': 'US' } });
             assert.strictEqual(proxyCountry, 'US');
+
+            // Web Standard Headers instance
+            const headersMap = new Map<string, string>([['cf-ipcountry', 'AE']]);
+            const webHeadersLike = {
+                get: (key: string) => headersMap.get(key.toLowerCase()) || null,
+            };
+            const webCountry = await provider.getCountry({ headers: webHeadersLike });
+            assert.strictEqual(webCountry, 'AE');
         });
 
         it('returns soft suggestion when visitor country differs from active market', async () => {
@@ -233,6 +306,12 @@ describe('Multi-Market Plugin Test Suite', () => {
 
             const toGlobal = await service.switchMarket(ctx, '/bd', 'global');
             assert.strictEqual(toGlobal.targetUrl, '/');
+        });
+
+        it('preserves query parameters and hash anchors when switching markets', async () => {
+            const result = await service.switchMarket(ctx, '/in/products/shoes?sort=price-asc&page=2#reviews', 'bd');
+            assert.strictEqual(result.targetUrl, '/bd/products/shoes?sort=price-asc&page=2#reviews');
+            assert.strictEqual(result.matchedRoute, true);
         });
     });
 
@@ -285,6 +364,176 @@ describe('Multi-Market Plugin Test Suite', () => {
             // Verify switching to the new market works
             const switched = await service.switchMarket(ctx, '/in/atelier/collection', 'ae');
             assert.strictEqual(switched.targetUrl, '/ae/atelier/collection');
+        });
+    });
+
+    describe('6. Regional Country Clusters & Multi-Country Mapping', () => {
+        it('routes visitors from clustered countries (DE, FR, IT) to a single regional market (EU)', async () => {
+            const euMarket = await service.create(ctx, {
+                code: 'eu',
+                name: 'European Union',
+                currency: 'EUR',
+                defaultLanguage: 'en',
+                supportedLanguages: ['en', 'de', 'fr'],
+                urlPrefix: 'eu',
+                channelCode: 'eu-channel',
+                enabled: true,
+                isDefault: false,
+                supportedCountryCodes: ['DE', 'FR', 'IT', 'ES'],
+            });
+
+            assert.strictEqual(euMarket.code, 'eu');
+            assert.deepStrictEqual(euMarket.supportedCountryCodes, ['DE', 'FR', 'IT', 'ES']);
+
+            // Visitor from Germany (DE)
+            const deRec = await service.getRecommendation(ctx, 'global', {
+                headers: { 'cf-ipcountry': 'DE' },
+            });
+            assert.strictEqual(deRec.recommendedMarketCode, 'eu');
+            assert.strictEqual(deRec.isRecommendedDifferentFromCurrent, true);
+
+            // Visitor from France (FR)
+            const frResolution = await service.resolveMarket(ctx, {
+                req: { headers: { 'cf-ipcountry': 'FR' } },
+            });
+            assert.strictEqual(frResolution.marketCode, 'eu');
+            assert.strictEqual(frResolution.channelCode, 'eu-channel');
+            assert.strictEqual(frResolution.currency, 'EUR');
+            assert.strictEqual(frResolution.channelToken, 'eu-token');
+        });
+    });
+
+    describe('7. Developer & QA Geo Simulation Headers', () => {
+        it('prioritizes x-mock-country header for local development and testing', async () => {
+            const rec = await service.getRecommendation(ctx, 'global', {
+                headers: {
+                    'x-mock-country': 'IN',
+                    'cf-ipcountry': 'US', // should be overridden by x-mock-country
+                },
+            });
+            assert.strictEqual(rec.countryCode, 'IN');
+            assert.strictEqual(rec.recommendedMarketCode, 'in');
+        });
+
+        it('supports x-suisuto-mock-country header as secondary simulation header', async () => {
+            const rec = await service.getRecommendation(ctx, 'global', {
+                headers: {
+                    'x-suisuto-mock-country': 'BD',
+                },
+            });
+            assert.strictEqual(rec.countryCode, 'BD');
+            assert.strictEqual(rec.recommendedMarketCode, 'bd');
+        });
+    });
+
+    describe('8. Default Market Safeguards, Channel Validation & EventBus', () => {
+        it('protects the active default market from deletion', async () => {
+            const deleteResult = await service.delete(ctx, '1'); // 'global' is default
+            assert.strictEqual(deleteResult.result, 'NOT_DELETED');
+            assert.match(deleteResult.message || '', /Cannot delete the default market/);
+        });
+
+        it('protects the active default market from deactivation', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.update(ctx, { id: '1', enabled: false });
+                },
+                {
+                    message: /Cannot disable the default market/,
+                }
+            );
+        });
+
+        it('protects the active default market from removing isDefault flag directly', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.update(ctx, { id: '1', isDefault: false });
+                },
+                {
+                    message: /Cannot remove default status from market 'Global Store'/,
+                }
+            );
+        });
+
+        it('rejects market creation when URL prefix collides with an existing market', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.create(ctx, {
+                        code: 'in-dup',
+                        name: 'Duplicate India Prefix',
+                        currency: 'INR',
+                        defaultLanguage: 'en',
+                        urlPrefix: 'in', // already claimed by market 'in'
+                        channelCode: 'in-channel',
+                    });
+                },
+                {
+                    message: /A market with URL prefix 'in' already exists/,
+                }
+            );
+        });
+
+        it('rejects market update when changing URL prefix to an already existing prefix', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.update(ctx, {
+                        id: '3', // bd market
+                        urlPrefix: 'in', // collides with in market
+                    });
+                },
+                {
+                    message: /A market with URL prefix 'in' already exists/,
+                }
+            );
+        });
+
+        it('stores and returns originHub in market config', async () => {
+            await service.update(ctx, {
+                id: '2',
+                originHub: 'IN_HUB',
+            });
+            const config = await service.getMarketConfig(ctx, 'in');
+            assert.strictEqual(config.originHub, 'IN_HUB');
+        });
+
+        it('rejects market creation when Vendure channel does not exist', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.create(ctx, {
+                        code: 'bad',
+                        name: 'Invalid Channel Market',
+                        currency: 'USD',
+                        defaultLanguage: 'en',
+                        channelCode: 'non-existent-channel',
+                    });
+                },
+                {
+                    message: /Vendure Channel with code 'non-existent-channel' does not exist/,
+                }
+            );
+        });
+
+        it('rejects market creation when currency is unsupported on the channel', async () => {
+            await assert.rejects(
+                async () => {
+                    await service.create(ctx, {
+                        code: 'bad-curr',
+                        name: 'Bad Currency Market',
+                        currency: 'JPY', // not supported on in-channel (INR only)
+                        defaultLanguage: 'en',
+                        channelCode: 'in-channel',
+                    });
+                },
+                {
+                    message: /Currency 'JPY' is not supported on Channel 'in-channel'/,
+                }
+            );
+        });
+
+        it('publishes MarketEvent to EventBus on create, update, and delete', () => {
+            assert.ok(publishedEvents.length >= 2);
+            const actions = publishedEvents.map(e => e.action);
+            assert.ok(actions.includes('created'));
         });
     });
 });

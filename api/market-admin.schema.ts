@@ -1,6 +1,6 @@
 import { gql } from 'graphql-tag';
 
-export const marketAdminApiSchema = gql`
+export const marketAdminApiSchema: any = gql`
     type Market {
         id: ID!
         createdAt: DateTime!
@@ -8,11 +8,14 @@ export const marketAdminApiSchema = gql`
         code: String!
         name: String!
         countryCode: String
+        supportedCountryCodes: [String!]
         currency: String!
         defaultLanguage: String!
         supportedLanguages: [String!]
         urlPrefix: String!
         channelCode: String!
+        channelToken: String
+        originHub: String
         enabled: Boolean!
         isDefault: Boolean!
         navigation: JSON
@@ -26,11 +29,14 @@ export const marketAdminApiSchema = gql`
         code: String!
         name: String!
         countryCode: String
+        supportedCountryCodes: [String!]
         currency: String!
         defaultLanguage: String!
         supportedLanguages: [String!]
         urlPrefix: String
         channelCode: String!
+        channelToken: String
+        originHub: String
         enabled: Boolean
         isDefault: Boolean
         navigation: JSON
@@ -45,11 +51,14 @@ export const marketAdminApiSchema = gql`
         code: String
         name: String
         countryCode: String
+        supportedCountryCodes: [String!]
         currency: String
         defaultLanguage: String
         supportedLanguages: [String!]
         urlPrefix: String
         channelCode: String
+        channelToken: String
+        originHub: String
         enabled: Boolean
         isDefault: Boolean
         navigation: JSON
