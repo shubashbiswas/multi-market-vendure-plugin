@@ -6,6 +6,12 @@
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -14,22 +20,29 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --test tests/market.spec.ts"
+    "test": "ts-node -T tests/market.spec.ts"
   },
   "peerDependencies": {
+    "@nestjs/common": ">=10.0.0",
+    "@nestjs/graphql": ">=12.0.0",
     "@vendure/core": ">=3.0.0",
-    "@vendure/dashboard": ">=3.0.0"
+    "@vendure/dashboard": ">=3.0.0",
+    "typeorm": ">=0.3.0"
   },
   "dependencies": {
     "graphql-tag": "^2.12.7",
     "lucide-react": "^0.536.0"
   },
   "devDependencies": {
+    "@nestjs/common": "11.2.5",
+    "@nestjs/graphql": "13.1.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@vendure/core": "3.7.3",
     "@vendure/dashboard": "3.7.3",
     "react": "^19.0.0",
+    "ts-node": "10.9.2",
+    "typeorm": "^1.1.1",
     "typescript": "^5.8.0"
   },
   "keywords": [
